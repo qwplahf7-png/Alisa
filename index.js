@@ -8,19 +8,8 @@ async function handle(request) {
       }
     });
 
-  function reply(text, body = {}) {
-    return json({
-      version: body.version || "1.0",
-      session: body.session || {},
-      response: {
-        text: String(text).slice(0, 1024),
-        end_session: false
-      }
-    });
-  }
-
   if (request.method === "GET") {
-    return json({ ok: true, service: "Alice + Gemini" });
+    return json({ ok: true, service: "Yandex Alice + Gemini" });
   }
 
   let body;
@@ -28,29 +17,38 @@ async function handle(request) {
   try {
     body = await request.json();
   } catch {
-    return reply("Не удалось прочитать запрос.");
+    return json({ error: "Invalid JSON" }, 400);
   }
 
-  const command = String(
-    body.request?.command ||
-    body.request?.original_utterance ||
-    ""
-  ).trim();
+  const session = body.session || {};
+  const version = body.version || "1.0";
+  const command = String(body.request?.command || "").trim();
+
+  function reply(text) {
+    return json({
+      response: {
+        text: String(text).slice(0, 1024),
+        end_session: false
+      },
+      session,
+      version
+    });
+  }
 
   if (!command) {
-    return reply("Привет! Чем могу помочь?", body);
+    return reply("Привет! Я слушаю.");
   }
 
-  const key = process.env.GEMINI_API_KEY;
+  const apiKey = process.env.GEMINI_API_KEY;
 
-  if (!key) {
+  if (!apiKey) {
     console.error("GEMINI_API_KEY is missing");
-    return reply("Не настроен ключ Gemini.", body);
+    return reply("Не настроен ключ Gemini.");
   }
 
+  const startedAt = Date.now();
   const controller = new AbortController();
-  const started = Date.now();
-  let reader;
+  const timeout = setTimeout(() => controller.abort(), 3200);
 
   try {
     const response = await fetch(
@@ -59,16 +57,12 @@ async function handle(request) {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-goog-api-key": key
+          "x-goog-api-key": apiKey
         },
         body: JSON.stringify({
           systemInstruction: {
             parts: [{
-              text:
-                "Ты голосовой помощник Алисы. " +
-                "Отвечай по-русски. " +
-                "Кратко, естественно, максимум одним предложением. " +
-                "Не используй Markdown."
+              text: "Ты голосовой помощник Алисы. Отвечай на русском языке естественно, кратко и по делу. Не используй разметку Markdown. Обычно отвечай одним-двумя предложениями."
             }]
           },
           contents: [{
@@ -76,11 +70,8 @@ async function handle(request) {
             parts: [{ text: command }]
           }],
           generationConfig: {
-            temperature: 0.3,
-            maxOutputTokens: 60,
-            thinkingConfig: {
-              thinkingLevel: "LOW"
-            }
+            temperature: 0.5,
+            maxOutputTokens: 100
           }
         }),
         signal: controller.signal
@@ -88,135 +79,81 @@ async function handle(request) {
     );
 
     if (!response.ok) {
-      const details = await response.text();
+      const errorText = await response.text();
       console.error(
-        "Gemini API error:",
+        "Gemini HTTP error:",
         response.status,
-        details.slice(0, 1000)
+        errorText.slice(0, 1000)
       );
-      return reply("Ошибка Gemini API.", body);
+      return reply("Gemini временно не отвечает.");
     }
 
-    if (!response.body) {
-      return reply("Gemini не вернул поток данных.", body);
-    }
-
-    reader = response.body.getReader();
-
-    const decoder = new TextDecoder();
-    let buffer = "";
+    const raw = await response.text();
     let answer = "";
-    const deadline = Date.now() + 3300;
 
-    while (Date.now() < deadline) {
-      const remaining = deadline - Date.now();
+    // Поддерживаем обычный JSON, массив JSON
+    // и потоковый формат Server-Sent Events.
+    try {
+      const parsed = JSON.parse(raw);
+      const items = Array.isArray(parsed) ? parsed : [parsed];
 
-      let result;
-
-      try {
-        result = await Promise.race([
-          reader.read(),
-          new Promise(resolve =>
-            setTimeout(
-              () => resolve({ timedOut: true }),
-              remaining
-            )
-          )
-        ]);
-      } catch (error) {
-        if (answer) break;
-        throw error;
-      }
-
-      if (result.timedOut || result.done) break;
-
-      buffer += decoder.decode(result.value, {
-        stream: true
-      });
-
-      let boundary;
-
-      while ((boundary = buffer.indexOf("\n\n")) !== -1) {
-        const event = buffer.slice(0, boundary);
-        buffer = buffer.slice(boundary + 2);
-
-        for (const line of event.split("\n")) {
-          if (!line.startsWith("data:")) continue;
-
-          const payload = line.slice(5).trim();
-          if (!payload || payload === "[DONE]") continue;
-
-          let chunk;
-
-          try {
-            chunk = JSON.parse(payload);
-          } catch {
-            continue;
-          }
-
-          const text = (
-            chunk.candidates?.[0]?.content?.parts || []
-          )
-            .map(part => part.text || "")
-            .join("");
-
-          if (text) answer += text;
-
-          if (
-            answer.length >= 100 ||
-            (answer.length >= 15 && /[.!?…]\s*$/.test(answer))
-          ) {
-            break;
+      for (const item of items) {
+        const parts = item?.candidates?.[0]?.content?.parts || [];
+        for (const part of parts) {
+          if (typeof part.text === "string") {
+            answer += part.text;
           }
         }
-
-        if (
-          answer.length >= 100 ||
-          (answer.length >= 15 && /[.!?…]\s*$/.test(answer))
-        ) {
-          break;
-        }
       }
+    } catch {
+      const lines = raw.split(/\r?\n/);
 
-      if (
-        answer.length >= 100 ||
-        (answer.length >= 15 && /[.!?…]\s*$/.test(answer))
-      ) {
-        break;
+      for (const line of lines) {
+        if (!line.startsWith("data:")) continue;
+
+        const payload = line.slice(5).trim();
+        if (!payload || payload === "[DONE]") continue;
+
+        try {
+          const item = JSON.parse(payload);
+          const parts = item?.candidates?.[0]?.content?.parts || [];
+
+          for (const part of parts) {
+            if (typeof part.text === "string") {
+              answer += part.text;
+            }
+          }
+        } catch (error) {
+          console.error("Could not parse Gemini stream chunk");
+        }
       }
     }
 
-    await reader.cancel().catch(() => {});
+    answer = answer.trim();
 
     console.log(
       "Gemini stream time ms:",
-      Date.now() - started,
+      Date.now() - startedAt,
       "answer length:",
       answer.length
     );
 
-    if (!answer.trim()) {
-      return reply("Gemini не успел сформировать ответ.", body);
+    if (!answer) {
+      console.error("Gemini returned no text. Body:", raw.slice(0, 2000));
+      return reply("Gemini вернул пустой ответ. Попробуй ещё раз.");
     }
 
-    return reply(answer.trim(), body);
-
+    return reply(answer);
   } catch (error) {
-    console.error(
-      "Gemini stream failed:",
-      Date.now() - started,
-      error.name,
-      error.message
-    );
+    console.error("Gemini request failed:", error.message);
 
-    return reply("Gemini не успел ответить.", body);
-
-  } finally {
-    controller.abort();
-
-    if (reader) {
-      await reader.cancel().catch(() => {});
+    if (error.name === "AbortError") {
+      return reply("Gemini не успел сформировать ответ.");
     }
+
+    return reply("Не удалось связаться с Gemini.");
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
