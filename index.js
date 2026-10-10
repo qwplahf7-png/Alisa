@@ -22,7 +22,7 @@ async function handle(request) {
   if (request.method === "GET") {
     return json({
       ok: true,
-      service: "Yandex Alice + Gemini 3.8 Flash"
+      service: "Yandex Alice + Gemini"
     });
   }
 
@@ -61,7 +61,7 @@ async function handle(request) {
           "x-goog-api-key": key
         },
         body: JSON.stringify({
-          model: "gemini-3.8-flash",
+          model: "gemini-3.5-flash-lite",
           input: command,
           system_instruction:
             "Ты голосовой помощник Яндекс Алисы. " +
@@ -73,33 +73,45 @@ async function handle(request) {
             max_output_tokens: 120
           }
         }),
-        signal: AbortSignal.timeout(2800)
+        signal: AbortSignal.timeout(3500)
       }
     );
 
     if (!response.ok) {
       const details = await response.text();
+
       console.error(
         "Gemini API error:",
         response.status,
         details
       );
-      return reply("Не удалось получить ответ от Gemini.", body);
+
+      return reply(
+        "Не удалось получить ответ от Gemini.",
+        body
+      );
     }
 
     const data = await response.json();
-
     const answer = String(data.output_text || "").trim();
 
     if (!answer) {
-      console.error("Gemini returned no text:", JSON.stringify(data));
+      console.error(
+        "Gemini returned no text:",
+        JSON.stringify(data)
+      );
+
       return reply("Gemini не сформировал ответ.", body);
     }
 
     return reply(answer, body);
 
   } catch (error) {
-    console.error("Gemini request failed:", error.message);
+    console.error(
+      "Gemini request failed:",
+      error.message
+    );
+
     return reply(
       "Не успела получить ответ. Попробуй ещё раз.",
       body
