@@ -1,14 +1,10 @@
-export default async function handler(req) {
-  function json(data, status = 200) {
-    return new Response(JSON.stringify(data), {
-      status,
-      headers: {
-        "Content-Type": "application/json; charset=utf-8"
-      }
-    });
+module.exports = async function (req, res) {
+  res.setHeader("Content-Type", "application/json; charset=utf-8");
+  function send(data, status = 200) {
+    return res.status(status).json(data);
   }
   function reply(text, body = {}) {
-    return json({
+    return send({
       version: body.version || "1.0",
       session: body.session || {},
       response: {
@@ -18,24 +14,30 @@ export default async function handler(req) {
     });
   }
   if (req.method === "GET") {
-    return json({
+    return send({
       ok: true,
       service: "Yandex Alice + Gemini"
     });
   }
   if (req.method !== "POST") {
-    return json({ error: "Method not allowed" }, 405);
+    res.setHeader("Allow", "GET, POST");
+    return send({ error: "Method not allowed" }, 405);
   }
-  let body;
-  try {
-    body = await req.json();
-  } catch {
-    return reply("Не удалось прочитать запрос.");
+  let body = req.body;
+  if (typeof body === "string") {
+    try {
+      body = JSON.parse(body);
+    } catch {
+      body = {};
+    }
+  }
+  if (!body || typeof body !== "object") {
+    body = {};
   }
   const command = String(
-    body.request?.command ||
-    body.request?.original_utterance ||
-    ""
+    (body.request &&
+      (body.request.command ||
+       body.request.original_utterance)) || ""
   ).trim();
   if (!command) {
     return reply("Привет! Чем могу помочь?", body);
@@ -59,9 +61,9 @@ export default async function handler(req) {
             parts: [{
               text:
                 "Ты голосовой помощник Яндекс Алисы. " +
-                "Отвечай на русском языке естественно, кратко и по существу. " +
+                "Отвечай на русском языке естественно и по существу. " +
                 "Не используй Markdown. Не выдумывай факты. " +
-                "Формулируй ответ так, чтобы его было удобно слушать."
+                "Ответ должен быть удобен для озвучивания."
             }]
           },
           contents: [{
@@ -82,19 +84,34 @@ export default async function handler(req) {
         response.status,
         (await response.text()).slice(0, 500)
       );
-      return reply("Не удалось получить ответ. Попробуй ещё раз.", body);
+      return reply(
+        "Не удалось получить ответ от помощника. Попробуй ещё раз.",
+        body
+      );
     }
     const data = await response.json();
-    const answer = (data.candidates?.[0]?.content?.parts || [])
-      .map(part => part.text || "")
-      .join("")
-      .trim();
+    const answer = (
+      data.candidates &&
+      data.candidates[0] &&
+      data.candidates[0].content &&
+      data.candidates[0].content.parts
+        ? data.candidates[0].content.parts
+            .map(function (part) {
+              return part.text || "";
+            })
+            .join("")
+            .trim()
+        : ""
+    );
     return reply(
       answer || "Не получилось сформировать ответ.",
       body
     );
   } catch (error) {
-    console.error("Request failed:", error.message);
-    return reply("Возникла ошибка при обработке запроса.", body);
+    console.error("Webhook error:", error.message);
+    return reply(
+      "Возникла ошибка при обработке запроса. Попробуй ещё раз.",
+      body
+    );
   }
-}
+};
