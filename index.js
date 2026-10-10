@@ -7,6 +7,7 @@ async function handle(request) {
       }
     });
   }
+
   function reply(text, body = {}) {
     return json({
       version: body.version || "1.0",
@@ -17,43 +18,57 @@ async function handle(request) {
       }
     });
   }
+
   if (request.method === "GET") {
     return json({
       ok: true,
       service: "Yandex Alice + Gemini"
     });
   }
+
   let body;
+
   try {
     body = await request.json();
   } catch {
     return reply("Не удалось прочитать запрос.");
   }
+
   const command = String(
     body.request?.command ||
     body.request?.original_utterance ||
     ""
   ).trim();
+
   if (!command) {
     return reply("Привет! Чем могу помочь?", body);
   }
+
   const key = process.env.GEMINI_API_KEY;
+
   if (!key) {
+    console.error("GEMINI_API_KEY is missing");
     return reply("Не настроен ключ Gemini на сервере.", body);
   }
+
   try {
     const response = await fetch(
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" +
-        encodeURIComponent(key),
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent",
       {
         method: "POST",
         headers: {
-          "Content-Type": "application/json"
+          "Content-Type": "application/json",
+          "x-goog-api-key": key
         },
         body: JSON.stringify({
           systemInstruction: {
             parts: [{
-              text: "Ты голосовой помощник Яндекс Алисы. Отвечай на русском языке естественно, кратко и по существу. Не используй Markdown. Не выдумывай факты."
+              text:
+                "Ты голосовой помощник Яндекс Алисы. " +
+                "Отвечай на русском языке естественно, " +
+                "кратко и по существу. " +
+                "Не используй Markdown. " +
+                "Не выдумывай факты."
             }]
           },
           contents: [{
@@ -68,27 +83,59 @@ async function handle(request) {
         signal: AbortSignal.timeout(20000)
       }
     );
+
     if (!response.ok) {
-      console.error("Gemini API error:", response.status);
-      return reply("Не удалось получить ответ. Попробуй ещё раз.", body);
+      const errorDetails = await response.text();
+
+      console.error(
+        "Gemini API error:",
+        response.status,
+        errorDetails
+      );
+
+      return reply(
+        "Не удалось получить ответ от Gemini. Попробуй ещё раз.",
+        body
+      );
     }
+
     const data = await response.json();
-    const answer = (data.candidates?.[0]?.content?.parts || [])
+
+    const answer = (
+      data.candidates?.[0]?.content?.parts || []
+    )
       .map(part => part.text || "")
       .join("")
       .trim();
+
+    if (!answer) {
+      console.error(
+        "Gemini returned no text:",
+        JSON.stringify(data)
+      );
+
+      return reply(
+        "Gemini не сформировал ответ. Попробуй ещё раз.",
+        body
+      );
+    }
+
+    return reply(answer, body);
+
+  } catch (error) {
+    console.error("Gemini request failed:", error.message);
+
     return reply(
-      answer || "Не получилось сформировать ответ.",
+      "Ошибка при обращении к Gemini. Попробуй ещё раз.",
       body
     );
-  } catch (error) {
-    console.error("Gemini error:", error.message);
-    return reply("Ошибка при обработке запроса. Попробуй ещё раз.", body);
   }
 }
+
 export function GET(request) {
   return handle(request);
 }
+
 export function POST(request) {
   return handle(request);
 }
