@@ -1,10 +1,14 @@
-module.exports = async function (req, res) {
-  res.setHeader("Content-Type", "application/json; charset=utf-8");
-  function send(data, status = 200) {
-    return res.status(status).json(data);
+async function handle(request) {
+  function json(data, status = 200) {
+    return new Response(JSON.stringify(data), {
+      status,
+      headers: {
+        "Content-Type": "application/json; charset=utf-8"
+      }
+    });
   }
   function reply(text, body = {}) {
-    return send({
+    return json({
       version: body.version || "1.0",
       session: body.session || {},
       response: {
@@ -13,38 +17,28 @@ module.exports = async function (req, res) {
       }
     });
   }
-  if (req.method === "GET") {
-    return send({
+  if (request.method === "GET") {
+    return json({
       ok: true,
       service: "Yandex Alice + Gemini"
     });
   }
-  if (req.method !== "POST") {
-    res.setHeader("Allow", "GET, POST");
-    return send({ error: "Method not allowed" }, 405);
-  }
-  let body = req.body;
-  if (typeof body === "string") {
-    try {
-      body = JSON.parse(body);
-    } catch {
-      body = {};
-    }
-  }
-  if (!body || typeof body !== "object") {
-    body = {};
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return reply("Не удалось прочитать запрос.");
   }
   const command = String(
-    (body.request &&
-      (body.request.command ||
-       body.request.original_utterance)) || ""
+    body.request?.command ||
+    body.request?.original_utterance ||
+    ""
   ).trim();
   if (!command) {
     return reply("Привет! Чем могу помочь?", body);
   }
   const key = process.env.GEMINI_API_KEY;
   if (!key) {
-    console.error("GEMINI_API_KEY is missing");
     return reply("Не настроен ключ Gemini на сервере.", body);
   }
   try {
@@ -59,11 +53,7 @@ module.exports = async function (req, res) {
         body: JSON.stringify({
           systemInstruction: {
             parts: [{
-              text:
-                "Ты голосовой помощник Яндекс Алисы. " +
-                "Отвечай на русском языке естественно и по существу. " +
-                "Не используй Markdown. Не выдумывай факты. " +
-                "Ответ должен быть удобен для озвучивания."
+              text: "Ты голосовой помощник Яндекс Алисы. Отвечай на русском языке естественно, кратко и по существу. Не используй Markdown. Не выдумывай факты."
             }]
           },
           contents: [{
@@ -79,39 +69,26 @@ module.exports = async function (req, res) {
       }
     );
     if (!response.ok) {
-      console.error(
-        "Gemini API error:",
-        response.status,
-        (await response.text()).slice(0, 500)
-      );
-      return reply(
-        "Не удалось получить ответ от помощника. Попробуй ещё раз.",
-        body
-      );
+      console.error("Gemini API error:", response.status);
+      return reply("Не удалось получить ответ. Попробуй ещё раз.", body);
     }
     const data = await response.json();
-    const answer = (
-      data.candidates &&
-      data.candidates[0] &&
-      data.candidates[0].content &&
-      data.candidates[0].content.parts
-        ? data.candidates[0].content.parts
-            .map(function (part) {
-              return part.text || "";
-            })
-            .join("")
-            .trim()
-        : ""
-    );
+    const answer = (data.candidates?.[0]?.content?.parts || [])
+      .map(part => part.text || "")
+      .join("")
+      .trim();
     return reply(
       answer || "Не получилось сформировать ответ.",
       body
     );
   } catch (error) {
-    console.error("Webhook error:", error.message);
-    return reply(
-      "Возникла ошибка при обработке запроса. Попробуй ещё раз.",
-      body
-    );
+    console.error("Gemini error:", error.message);
+    return reply("Ошибка при обработке запроса. Попробуй ещё раз.", body);
   }
-};
+}
+export function GET(request) {
+  return handle(request);
+}
+export function POST(request) {
+  return handle(request);
+}
