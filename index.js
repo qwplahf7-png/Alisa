@@ -1,30 +1,37 @@
-module.exports = async function (req, res) {
-  res.setHeader("Content-Type", "application/json; charset=utf-8");
-  function reply(text, body) {
-    return res.status(200).json({
-      version: body?.version || "1.0",
-      session: body?.session || {},
+export default async function handler(req) {
+  function json(data, status = 200) {
+    return new Response(JSON.stringify(data), {
+      status,
+      headers: {
+        "Content-Type": "application/json; charset=utf-8"
+      }
+    });
+  }
+  function reply(text, body = {}) {
+    return json({
+      version: body.version || "1.0",
+      session: body.session || {},
       response: {
         text: String(text).slice(0, 1024),
         end_session: false
       }
     });
   }
-  // Проверка доступности сервера
   if (req.method === "GET") {
-    return res.status(200).json({
+    return json({
       ok: true,
-      service: "Yandex Alice + Gemini",
-      method: "GET"
+      service: "Yandex Alice + Gemini"
     });
   }
   if (req.method !== "POST") {
-    res.setHeader("Allow", "GET, POST");
-    return res.status(405).json({
-      error: "Method not allowed"
-    });
+    return json({ error: "Method not allowed" }, 405);
   }
-  const body = req.body || {};
+  let body;
+  try {
+    body = await req.json();
+  } catch {
+    return reply("Не удалось прочитать запрос.");
+  }
   const command = String(
     body.request?.command ||
     body.request?.original_utterance ||
@@ -35,8 +42,8 @@ module.exports = async function (req, res) {
   }
   const key = process.env.GEMINI_API_KEY;
   if (!key) {
-    console.error("GEMINI_API_KEY is not configured");
-    return reply("Сервер пока не настроен. Попробуй позже.", body);
+    console.error("GEMINI_API_KEY is missing");
+    return reply("Не настроен ключ Gemini на сервере.", body);
   }
   try {
     const response = await fetch(
@@ -49,23 +56,18 @@ module.exports = async function (req, res) {
         },
         body: JSON.stringify({
           systemInstruction: {
-            parts: [
-              {
-                text:
-                  "Ты голосовой помощник Яндекс Алисы на русском языке. " +
-                  "Отвечай естественно, понятно и по существу. " +
-                  "Не используй Markdown, списки со специальным форматированием " +
-                  "или длинные вступления. Не выдумывай факты. " +
-                  "Ответ должен подходить для озвучивания голосом."
-              }
-            ]
+            parts: [{
+              text:
+                "Ты голосовой помощник Яндекс Алисы. " +
+                "Отвечай на русском языке естественно, кратко и по существу. " +
+                "Не используй Markdown. Не выдумывай факты. " +
+                "Формулируй ответ так, чтобы его было удобно слушать."
+            }]
           },
-          contents: [
-            {
-              role: "user",
-              parts: [{ text: command }]
-            }
-          ],
+          contents: [{
+            role: "user",
+            parts: [{ text: command }]
+          }],
           generationConfig: {
             temperature: 0.7,
             maxOutputTokens: 300
@@ -75,30 +77,24 @@ module.exports = async function (req, res) {
       }
     );
     if (!response.ok) {
-      const errorText = (await response.text()).slice(0, 1000);
-      console.error("Gemini API error:", response.status, errorText);
-      return reply(
-        "Не получилось получить ответ от помощника. Попробуй ещё раз.",
-        body
+      console.error(
+        "Gemini API error:",
+        response.status,
+        (await response.text()).slice(0, 500)
       );
+      return reply("Не удалось получить ответ. Попробуй ещё раз.", body);
     }
     const data = await response.json();
-    const answer = (
-      data.candidates?.[0]?.content?.parts || []
-    )
+    const answer = (data.candidates?.[0]?.content?.parts || [])
       .map(part => part.text || "")
       .join("")
       .trim();
-    if (!answer) {
-      console.error("Gemini returned an empty answer");
-      return reply("Не получилось сформировать ответ. Попробуй ещё раз.", body);
-    }
-    return reply(answer, body);
-  } catch (error) {
-    console.error("Webhook error:", error.message);
     return reply(
-      "Возникла временная ошибка. Попробуй ещё раз.",
+      answer || "Не получилось сформировать ответ.",
       body
     );
+  } catch (error) {
+    console.error("Request failed:", error.message);
+    return reply("Возникла ошибка при обработке запроса.", body);
   }
-};
+}
