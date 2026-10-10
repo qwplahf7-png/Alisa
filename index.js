@@ -1,12 +1,12 @@
+
 async function handle(request) {
-  function json(data, status = 200) {
-    return new Response(JSON.stringify(data), {
+  const json = (data, status = 200) =>
+    new Response(JSON.stringify(data), {
       status,
       headers: {
         "Content-Type": "application/json; charset=utf-8"
       }
     });
-  }
 
   function reply(text, body = {}) {
     return json({
@@ -22,7 +22,7 @@ async function handle(request) {
   if (request.method === "GET") {
     return json({
       ok: true,
-      service: "Yandex Alice + Gemini"
+      service: "Yandex Alice + Gemini 3.8 Flash"
     });
   }
 
@@ -48,12 +48,12 @@ async function handle(request) {
 
   if (!key) {
     console.error("GEMINI_API_KEY is missing");
-    return reply("Не настроен ключ Gemini на сервере.", body);
+    return reply("На сервере не настроен ключ Gemini.", body);
   }
 
   try {
     const response = await fetch(
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent",
+      "https://generativelanguage.googleapis.com/v1beta/interactions",
       {
         method: "POST",
         headers: {
@@ -61,72 +61,47 @@ async function handle(request) {
           "x-goog-api-key": key
         },
         body: JSON.stringify({
-          systemInstruction: {
-            parts: [{
-              text:
-                "Ты голосовой помощник Яндекс Алисы. " +
-                "Отвечай на русском языке естественно, " +
-                "кратко и по существу. " +
-                "Не используй Markdown. " +
-                "Не выдумывай факты."
-            }]
-          },
-          contents: [{
-            role: "user",
-            parts: [{ text: command }]
-          }],
-          generationConfig: {
-            temperature: 0.7,
-            maxOutputTokens: 300
+          model: "gemini-3.8-flash",
+          input: command,
+          system_instruction:
+            "Ты голосовой помощник Яндекс Алисы. " +
+            "Отвечай на русском языке, кратко и естественно. " +
+            "Обычно отвечай одним-двумя предложениями. " +
+            "Не используй Markdown.",
+          generation_config: {
+            thinking_level: "low",
+            max_output_tokens: 120
           }
         }),
-        signal: AbortSignal.timeout(20000)
+        signal: AbortSignal.timeout(2800)
       }
     );
 
     if (!response.ok) {
-      const errorDetails = await response.text();
-
+      const details = await response.text();
       console.error(
         "Gemini API error:",
         response.status,
-        errorDetails
+        details
       );
-
-      return reply(
-        "Не удалось получить ответ от Gemini. Попробуй ещё раз.",
-        body
-      );
+      return reply("Не удалось получить ответ от Gemini.", body);
     }
 
     const data = await response.json();
 
-    const answer = (
-      data.candidates?.[0]?.content?.parts || []
-    )
-      .map(part => part.text || "")
-      .join("")
-      .trim();
+    const answer = String(data.output_text || "").trim();
 
     if (!answer) {
-      console.error(
-        "Gemini returned no text:",
-        JSON.stringify(data)
-      );
-
-      return reply(
-        "Gemini не сформировал ответ. Попробуй ещё раз.",
-        body
-      );
+      console.error("Gemini returned no text:", JSON.stringify(data));
+      return reply("Gemini не сформировал ответ.", body);
     }
 
     return reply(answer, body);
 
   } catch (error) {
     console.error("Gemini request failed:", error.message);
-
     return reply(
-      "Ошибка при обращении к Gemini. Попробуй ещё раз.",
+      "Не успела получить ответ. Попробуй ещё раз.",
       body
     );
   }
