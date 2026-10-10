@@ -20,10 +20,7 @@ async function handle(request) {
   }
 
   if (request.method === "GET") {
-    return json({
-      ok: true,
-      service: "Yandex Alice + Gemini"
-    });
+    return json({ ok: true, service: "Alice + Gemini" });
   }
 
   let body;
@@ -48,7 +45,7 @@ async function handle(request) {
 
   if (!key) {
     console.error("GEMINI_API_KEY is missing");
-    return reply("На сервере не настроен ключ Gemini.", body);
+    return reply("Не настроен ключ Gemini.", body);
   }
 
   try {
@@ -61,61 +58,54 @@ async function handle(request) {
           "x-goog-api-key": key
         },
         body: JSON.stringify({
-          model: "gemini-3.5-flash-lite",
+          model: "gemini-3.8-flash",
           input: command,
           system_instruction:
             "Ты голосовой помощник Яндекс Алисы. " +
-            "Отвечай на русском языке, кратко и естественно. " +
-            "Обычно отвечай одним-двумя предложениями. " +
+            "Отвечай по-русски, кратко и естественно. " +
             "Не используй Markdown.",
           generation_config: {
             thinking_level: "low",
-            max_output_tokens: 120
+            max_output_tokens: 100
           }
         }),
         signal: AbortSignal.timeout(3500)
       }
     );
 
-    if (!response.ok) {
-      const details = await response.text();
+    const data = await response.json();
 
+    if (!response.ok) {
       console.error(
         "Gemini API error:",
         response.status,
-        details
+        JSON.stringify(data)
       );
-
-      return reply(
-        "Не удалось получить ответ от Gemini.",
-        body
-      );
+      return reply("Ошибка при обращении к Gemini.", body);
     }
 
-    const data = await response.json();
-    const answer = String(data.output_text || "").trim();
+    // В REST API текст находится внутри steps.
+    const answer = (data.steps || [])
+      .filter(step => step.type === "model_output")
+      .flatMap(step => step.content || [])
+      .filter(item => item.type === "text")
+      .map(item => item.text || "")
+      .join("")
+      .trim();
 
     if (!answer) {
       console.error(
-        "Gemini returned no text:",
+        "Gemini returned no text. Response:",
         JSON.stringify(data)
       );
-
-      return reply("Gemini не сформировал ответ.", body);
+      return reply("Gemini не вернул текстовый ответ.", body);
     }
 
     return reply(answer, body);
 
   } catch (error) {
-    console.error(
-      "Gemini request failed:",
-      error.message
-    );
-
-    return reply(
-      "Не успела получить ответ. Попробуй ещё раз.",
-      body
-    );
+    console.error("Gemini request failed:", error.message);
+    return reply("Не удалось дождаться ответа Gemini.", body);
   }
 }
 
